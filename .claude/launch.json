@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "paysentry-target-agent",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["target_agent/run_agent.py", "--port", "8000"],
+      "port": 8000
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+.env
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+# Quarantined garak environment -- see redteam/run_garak.py for why it exists.
+.venv-garak/
+node_modules/
+
+# Generated red-team output -- keep the directory, not the artifacts.
+reports/*.json
+reports/*.html
+reports/*.jsonl
+!reports/.gitkeep
+
+# Tool scratch dirs / stray run artifacts
+garak_runs/
+garak.log
+runs/
+.promptfoo/
+.env

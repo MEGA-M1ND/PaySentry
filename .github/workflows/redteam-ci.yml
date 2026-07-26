@@ -1,0 +1,159 @@
+name: PaySentry Red-Team Regression Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  redteam-gate:
+    name: promptfoo regression gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      LLM_PROVIDER: openai
+      OPENAI_MODEL: gpt-5.2
+      # Guardrails ON: this job asserts the Stage 6 patch is present and working.
+      PAYSENTRY_GUARDRAILS: "on"
+      PAYSENTRY_AUTHZ: "on"
+      PROMPTFOO_DISABLE_TELEMETRY: "1"
+      PROMPTFOO_DISABLE_UPDATE: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install promptfoo
+        # npm package, deliberately not in requirements.txt
+        run: npm install -g promptfoo
+
+      - name: Fail fast if no API key is configured
+        # Without this the agent 401s and every scenario reports a clean
+        # ledger -- a green build that proves nothing. Better to stop here.
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::error::OPENAI_API_KEY secret is not set. The gate cannot"
+            echo "::error::run against a live model, and a pass would be"
+            echo "::error::meaningless. Add it under Settings > Secrets."
+            exit 1
+          fi
+
+      - name: Start target agent
+        run: |
+          python target_agent/run_agent.py > agent.log 2>&1 &
+          echo "Waiting for the agent to become ready..."
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8000/health > /dev/null; then
+              echo "Agent is up:"
+              curl -s http://localhost:8000/health
+              echo
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Agent failed to start within 120s"
+          cat agent.log
+          exit 1
+
+      - name: Verify both fixes are actually enabled
+        # A green gate against an unguarded build would be a false pass, so
+        # confirm which side of each patch we are testing before asserting.
+        run: |
+          HEALTH=$(curl -s http://localhost:8000/health)
+          echo "$HEALTH"
+          for field in guardrails authz; do
+            VALUE=$(echo "$HEALTH" | python -c "import json,sys; print(json.load(sys.stdin)['$field'])")
+            echo "$field=$VALUE"
+            if [ "$VALUE" != "on" ]; then
+              echo "::error::Expected $field=on, got '$VALUE'."
+              exit 1
+            fi
+          done
+
+      - name: Run promptfoo regression gate
+        # -j 1 is required: every scenario reads the shared refund_log, so
+        # concurrent tests would race on it. Non-zero exit fails the build.
+        run: promptfoo eval -c promptfooconfig.yaml -j 1 --no-cache
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: promptfoo-results
+          path: |
+            agent.log
+            ~/.promptfoo/logs/
+          retention-days: 14
+          if-no-files-found: warn
+
+  verify-gate-catches-regression:
+    name: gate fails when the patch is reverted
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # A regression gate nobody has watched fail is not known to work. This job
+    # reverts the Stage 6 patch, runs the same suite, and PASSES ONLY IF
+    # promptfoo FAILS. It is the test for the test.
+    if: github.event_name == 'workflow_dispatch'
+
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      LLM_PROVIDER: openai
+      OPENAI_MODEL: gpt-5.2
+      PAYSENTRY_GUARDRAILS: "off"   # <-- the LLM06 patch, reverted
+      PAYSENTRY_AUTHZ: "off"        # <-- the LLM02 patch, reverted
+      PROMPTFOO_DISABLE_TELEMETRY: "1"
+      PROMPTFOO_DISABLE_UPDATE: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          npm install -g promptfoo
+
+      - name: Start target agent with both fixes OFF
+        run: |
+          python target_agent/run_agent.py > agent.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:8000/health > /dev/null && break
+            sleep 2
+          done
+          curl -s http://localhost:8000/health
+          echo
+
+      - name: Expect the gate to FAIL
+        run: |
+          if promptfoo eval -c promptfooconfig.yaml -j 1 --no-cache; then
+            echo "::error::The regression gate PASSED against an unguarded"
+            echo "::error::build. The gate is not actually protecting anything."
+            exit 1
+          else
+            echo "Gate correctly failed against the reverted patch."
+          fi

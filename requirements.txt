@@ -1,0 +1,40 @@
+# PaySentry -- Python dependencies.
+# Versions pinned to what the Stage 1-7 runs were actually verified against.
+#
+# NOT IN THIS FILE, on purpose:
+#
+#   promptfoo  -- an npm package, not a Python one:  npm install -g promptfoo
+#                 (needs Node.js >= 18)
+#
+#   garak      -- CANNOT be installed alongside these packages. It pins
+#                 openai==0.28.1 (the pre-1.0 API), which downgrades openai
+#                 2.43.0 and breaks langchain-openai, i.e. it destroys the very
+#                 agent it is meant to scan. It lives in a quarantined
+#                 virtualenv instead and reaches the target over HTTP:
+#                     python -m venv .venv-garak
+#                     .venv-garak/Scripts/python -m pip install --only-binary :all: garak
+#                 See redteam/run_garak.py for the full rationale.
+#
+#   pyrit      -- evaluated and rejected for the same class of reason: it
+#                 resolves fastapi 0.115.5 -> 0.140.0, starlette -> 1.3.1 and
+#                 pydantic 2.10.3 -> 2.13.4 into this environment. The
+#                 multi-turn attack ladders are hand-rolled with `requests`
+#                 instead. See redteam/attacks/excessive_agency.py.
+
+# --- target agent: LangGraph ReAct agent + tools ---
+langgraph==1.2.5
+langgraph-checkpoint==4.1.1
+langgraph-prebuilt==1.1.0
+langchain==1.3.9
+langchain-core==1.4.7
+langchain-openai==1.3.2
+openai==2.43.0
+
+# --- target agent: HTTP surface ---
+fastapi==0.115.5
+uvicorn==0.32.1
+pydantic==2.10.3
+
+# --- config + red-team harness ---
+python-dotenv==1.0.1
+requests==2.34.2
