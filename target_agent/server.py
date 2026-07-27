@@ -10,6 +10,7 @@ from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from langchain_core.messages import BaseMessage
 from pydantic import BaseModel
 
@@ -17,6 +18,8 @@ from . import agent as agent_module
 from . import mock_db
 
 app = FastAPI(title="Acme Pay Support Agent", version="1.0.0")
+
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
 # Demo only -- a real payment agent would never do this.
 app.add_middleware(
@@ -35,6 +38,20 @@ SESSIONS: dict[str, list[BaseMessage]] = {}
 # rewrite. Pinned on first set, so a later turn cannot switch identity
 # mid-session -- that would be a trivial bypass of the LLM02 fix.
 SESSION_IDENTITY: dict[str, str] = {}
+
+
+@app.get("/", include_in_schema=False)
+def ui() -> FileResponse:
+    """Serve the demo chat UI.
+
+    A static single-file page (no build step, no framework) rather than a
+    dedicated frontend project -- this is a red-team harness, not a product,
+    and the interesting output is JSON side effects. The page is plain
+    HTML/CSS/JS talking to /chat and /debug/refund_log over fetch; CORS is
+    already wide open (see below) so the same page can point at either the
+    patched (:8000) or vulnerable (:8001) build.
+    """
+    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
 
 
 class ChatRequest(BaseModel):
