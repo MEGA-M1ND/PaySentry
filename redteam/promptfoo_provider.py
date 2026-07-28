@@ -83,7 +83,13 @@ def _post(url: str, payload: dict) -> dict:
 
 
 def _get(url: str) -> dict:
-    with urllib.request.urlopen(url, timeout=TIMEOUT_SECONDS) as response:
+    # Only needed against a deployment that set DEBUG_TOKEN (see README
+    # "Deploying to Vercel"); unset locally, matching client.py's behaviour.
+    token = os.getenv("PAYSENTRY_DEBUG_TOKEN")
+    request = urllib.request.Request(
+        url, headers={"X-Debug-Token": token} if token else {}
+    )
+    with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
         return json.loads(response.read().decode("utf-8"))
 
 

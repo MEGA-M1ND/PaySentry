@@ -38,3 +38,10 @@ pydantic==2.10.3
 # --- config + red-team harness ---
 python-dotenv==1.0.1
 requests==2.34.2
+
+# --- Vercel KV backend (target_agent/store.py) ---
+# Only imported when KV_REST_API_URL/TOKEN are present in the environment
+# (i.e. deployed on Vercel with a KV store attached). Local dev never touches
+# this -- it falls back to plain in-memory dicts -- but it's installed
+# unconditionally so the same requirements.txt works for both.
+upstash-redis==1.7.0
