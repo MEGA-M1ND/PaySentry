@@ -1,0 +1,11 @@
+{
+  "rewrites": [
+    { "source": "/chat", "destination": "/api/index" },
+    { "source": "/health", "destination": "/api/index" },
+    { "source": "/debug/refund_log", "destination": "/api/index" },
+    { "source": "/debug/reset", "destination": "/api/index" }
+  ],
+  "functions": {
+    "api/index.py": { "maxDuration": 60 }
+  }
+}

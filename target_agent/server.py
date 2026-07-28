@@ -1,25 +1,37 @@
 """FastAPI wrapper around the Acme Pay agent.
 
-Exposes POST /chat with per-session in-memory conversation history, plus two
-demo-only introspection endpoints under /debug that let the red-team harness
-read the target's real side effects from another process.
+Exposes POST /chat with per-session conversation history, plus two demo-only
+introspection endpoints under /debug that let the red-team harness read the
+target's real side effects from another process.
+
+Session/ledger storage is delegated to target_agent/store.py rather than kept
+as module-level dicts here, so the exact same code runs correctly whether this
+process is a single long-lived uvicorn server (local dev) or a Vercel
+serverless function (ephemeral instances, no shared memory). See that
+module's docstring for the mechanism.
 """
 
 import os
+import secrets
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from langchain_core.messages import BaseMessage
 from pydantic import BaseModel
 
 from . import agent as agent_module
 from . import mock_db
+from . import store
 
 app = FastAPI(title="Acme Pay Support Agent", version="1.0.0")
 
-STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+# public/index.html at the repo root, not under target_agent/ -- this is the
+# same file Vercel serves as a static asset for the deployed build (see
+# vercel.json), so there is exactly one copy of the UI to keep in sync
+# between local dev and production rather than two drifting ones.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+UI_PATH = os.path.join(REPO_ROOT, "public", "index.html")
 
 # Demo only -- a real payment agent would never do this.
 app.add_middleware(
@@ -30,15 +42,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# session_id -> message history. In-memory, no persistence.
-SESSIONS: dict[str, list[BaseMessage]] = {}
-
-# session_id -> authenticated customer name. Kept separate from the message
-# history deliberately: identity must not be something the conversation can
-# rewrite. Pinned on first set, so a later turn cannot switch identity
-# mid-session -- that would be a trivial bypass of the LLM02 fix.
-SESSION_IDENTITY: dict[str, str] = {}
-
 
 @app.get("/", include_in_schema=False)
 def ui() -> FileResponse:
@@ -48,10 +51,10 @@ def ui() -> FileResponse:
     dedicated frontend project -- this is a red-team harness, not a product,
     and the interesting output is JSON side effects. The page is plain
     HTML/CSS/JS talking to /chat and /debug/refund_log over fetch; CORS is
-    already wide open (see below) so the same page can point at either the
-    patched (:8000) or vulnerable (:8001) build.
+    already wide open (see below) so the same page can point at either a
+    locally-run vulnerable build or this server.
     """
-    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+    return FileResponse(UI_PATH)
 
 
 class ChatRequest(BaseModel):
@@ -78,18 +81,16 @@ class ChatResponse(BaseModel):
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
     if req.session_id:
-        history = SESSIONS.get(req.session_id, [])
+        history = store.get_history(req.session_id)
         # Pin identity on first set; later turns cannot change it.
-        if req.authenticated_customer and req.session_id not in SESSION_IDENTITY:
-            SESSION_IDENTITY[req.session_id] = req.authenticated_customer.strip()
-        identity = SESSION_IDENTITY.get(req.session_id)
+        if req.authenticated_customer:
+            store.pin_identity(req.session_id, req.authenticated_customer.strip())
+        identity = store.get_identity(req.session_id)
         result = agent_module.run_turn(history, req.message, identity)
-        SESSIONS[req.session_id] = result["messages"]
+        store.set_history(req.session_id, result["messages"])
     else:
         # Stateless one-shot: nothing is retained between calls.
-        result = agent_module.run_turn(
-            [], req.message, req.authenticated_customer
-        )
+        result = agent_module.run_turn([], req.message, req.authenticated_customer)
     return ChatResponse(response=result["response"], tool_calls=result["tool_calls"])
 
 
@@ -110,13 +111,17 @@ def health() -> dict[str, Any]:
 
     return {
         "status": "ok",
-        "sessions": len(SESSIONS),
+        "sessions": store.session_count(),
         "provider": provider,
         "model": model,
-        # Which side of the Stage 6 patch this server is running, so a report
-        # can never misattribute a result to the wrong build.
+        # Which side of the Stage 6 / LLM02 patches this server is running,
+        # so a report can never misattribute a result to the wrong build.
         "guardrails": "on" if agent_module.GUARDRAILS_ENABLED else "off",
         "authz": "on" if agent_module.AUTHZ_ENABLED else "off",
+        # Which storage backend is actually live -- "kv" only when Vercel (or
+        # anything else) has injected KV_REST_API_URL/TOKEN; otherwise the
+        # in-memory dicts, which do not survive across serverless instances.
+        "storage": "kv" if store.USING_KV else "memory",
     }
 
 
@@ -124,22 +129,39 @@ def health() -> dict[str, Any]:
 # Demo-only introspection.
 #
 # The red-team suite runs in a separate process, so it cannot read the target's
-# `refund_log` directly. These endpoints expose the target's ground-truth side
+# refund ledger directly. These endpoints expose the target's ground-truth side
 # effects for scoring. They are NOT part of the simulated product surface --
 # no attack is allowed to use them as an exploit path.
+#
+# Optional guard: if DEBUG_TOKEN is set in the environment, both endpoints
+# require a matching X-Debug-Token header. Unset (the default, and always the
+# case for local dev) means fully open, exactly as every prior stage of this
+# project. This exists only because a deployed build is reachable by anyone on
+# the internet -- a public /debug/reset that any visitor can hit mid-demo, or
+# a public /debug/refund_log leaking every refund a stranger has triggered, is
+# a real annoyance even though it isn't one of the OWASP findings this project
+# scores. Set the env var only on a public deployment; leave it unset locally.
 # ---------------------------------------------------------------------------
+
+_DEBUG_TOKEN = os.getenv("DEBUG_TOKEN")
+
+
+def _check_debug_token(x_debug_token: str | None) -> None:
+    if _DEBUG_TOKEN and not (x_debug_token and secrets.compare_digest(x_debug_token, _DEBUG_TOKEN)):
+        raise HTTPException(status_code=401, detail="missing or incorrect X-Debug-Token")
 
 
 @app.get("/debug/refund_log")
-def debug_refund_log() -> dict[str, Any]:
+def debug_refund_log(x_debug_token: str | None = Header(default=None)) -> dict[str, Any]:
     """Return every refund the agent has actually executed."""
-    return {"count": len(mock_db.refund_log), "refunds": list(mock_db.refund_log)}
+    _check_debug_token(x_debug_token)
+    refunds = mock_db.list_refunds()
+    return {"count": len(refunds), "refunds": refunds}
 
 
 @app.post("/debug/reset")
-def debug_reset() -> dict[str, Any]:
+def debug_reset(x_debug_token: str | None = Header(default=None)) -> dict[str, Any]:
     """Clear refund log and sessions so each red-team run starts clean."""
+    _check_debug_token(x_debug_token)
     mock_db.reset_refund_log()
-    SESSIONS.clear()
-    SESSION_IDENTITY.clear()
     return {"status": "reset"}

@@ -13,6 +13,8 @@ against the agent's prose.
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from . import store
+
 # ---------------------------------------------------------------------------
 # Transactions
 # ---------------------------------------------------------------------------
@@ -82,9 +84,17 @@ def get_transaction(transaction_id: str) -> Optional[dict[str, Any]]:
 
 # ---------------------------------------------------------------------------
 # Refund log -- the ground truth for scoring the flagship attack
+#
+# Storage is delegated to target_agent/store.py: a plain in-memory list for
+# local dev (one long-lived process), Vercel KV when deployed serverless
+# (ephemeral instances can't share a module-level list). See that module's
+# docstring for why the switch is automatic rather than a flag to remember.
 # ---------------------------------------------------------------------------
 
-refund_log: list[dict[str, Any]] = []
+
+def list_refunds() -> list[dict[str, Any]]:
+    """Every refund ever logged, in order. The ground truth for scoring."""
+    return store.list_refunds()
 
 
 def log_refund(transaction_id: str, amount: float, reason: str) -> dict[str, Any]:
@@ -95,16 +105,22 @@ def log_refund(transaction_id: str, amount: float, reason: str) -> dict[str, Any
     at all; Stage 6 adds them.
     """
     record = {
-        "refund_id": f"RFND{len(refund_log) + 1:04d}",
+        "refund_id": f"RFND{len(store.list_refunds()) + 1:04d}",
         "transaction_id": transaction_id,
         "amount": amount,
         "reason": reason,
         "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
-    refund_log.append(record)
+    store.append_refund(record)
     return record
 
 
 def reset_refund_log() -> None:
-    """Clear the log. Used between red-team runs so results are independent."""
-    refund_log.clear()
+    """Clear all store state (refunds, sessions, identities).
+
+    Named after its original, narrower scope; kept as a thin wrapper around
+    store.reset() because nothing in this codebase ever calls it separately
+    from a full reset -- server.py's /debug/reset always clears everything
+    in one action, so there is no partial-reset behaviour to preserve.
+    """
+    store.reset()

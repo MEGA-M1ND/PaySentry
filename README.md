@@ -108,6 +108,110 @@ promptfoo eval -c promptfooconfig.yaml -j 1   # CI regression gate  (needs npm)
 
 ---
 
+## Deploying to Vercel
+
+**Only the patched build (`PAYSENTRY_GUARDRAILS=on`, `PAYSENTRY_AUTHZ=on`) is meant to go
+public.** The vulnerable build is a live, working refund-fraud exploit — synthetic data,
+but a real, unauthenticated, unthrottled endpoint billing a real `OPENAI_API_KEY`. Never
+set either flag to `off` on a public deployment. Compare against the vulnerable side by
+running it locally instead (`PAYSENTRY_GUARDRAILS=off python target_agent/run_agent.py
+--port 8001`) — the demo UI's second target button is built for exactly this, and only
+resolves to your own machine's `localhost:8001`, never anyone else's.
+
+### Why this needed more than a config file
+
+This app's state — conversation history and, more importantly, the `refund_log` ledger
+that every verdict in this project is scored against — lived in plain Python dicts at
+the module level. That's fine for one long-running `uvicorn` process; it silently breaks
+on Vercel, where the FastAPI app runs as a serverless function and instances are
+ephemeral with no guarantee your next request lands on the same one.
+
+`target_agent/store.py` fixes this with a backend switch that requires no flag to keep in
+sync with the environment: if Vercel has attached a KV store, it injects
+`KV_REST_API_URL`/`KV_REST_API_TOKEN`, and `store.py` uses those automatically (Vercel KV
+is a rebrand of Upstash Redis, reachable over a REST API — no persistent connection,
+which is what makes it viable inside a serverless function at all). Absent those two
+variables — true for every local run — it falls back to the exact in-memory dicts this
+project always used. `/health`'s `storage` field tells you which one is actually live;
+it should read `"kv"` once deployed, and if it doesn't, sessions and the ledger will
+silently reset between requests.
+
+The static demo UI (`public/index.html`) is served by Vercel directly as a static asset,
+not through the Python function — zero cold start for the page itself, and it's the
+single file both local dev and the deployed build read (no drift between two copies).
+It also no longer hardcodes `localhost:8000`; it defaults to `window.location.origin`, so
+the same file works unmodified wherever it's opened.
+
+### One-time account setup (needs your own authenticated Vercel session — I can't do this part)
+
+1. **Import the repo.** [vercel.com/new](https://vercel.com/new) → Import Git Repository →
+   select this repo. Framework preset: **Other**. Leave build/output settings default —
+   `vercel.json` and `api/index.py` handle routing, `requirements.txt` at the repo root
+   is auto-detected for the Python function.
+
+2. **Attach a KV store.** Project → Storage tab → Connect Store → a Redis-compatible KV
+   option (Vercel's storage marketplace; Upstash-backed). Link it to this project. This
+   is what injects `KV_REST_API_URL`/`KV_REST_API_TOKEN` — without it the deployed app
+   still runs, just with `storage: "memory"` and the reliability problem described above.
+   Exact wording/navigation may have moved since this was written; the goal is any option
+   that sets those two env var names.
+
+3. **Set environment variables** (Project → Settings → Environment Variables):
+
+   | Variable | Value |
+   | --- | --- |
+   | `OPENAI_API_KEY` | your key |
+   | `OPENAI_MODEL` | `gpt-5.2` |
+   | `LLM_PROVIDER` | `openai` |
+   | `PAYSENTRY_GUARDRAILS` | `on` |
+   | `PAYSENTRY_AUTHZ` | `on` |
+   | `DEBUG_TOKEN` | *(recommended — see below)* |
+
+   `KV_REST_API_URL`/`KV_REST_API_TOKEN` are injected automatically by step 2; don't set
+   them by hand.
+
+4. **Deploy.** Push to `main` (auto-deploys once linked), or from the repo root:
+   ```bash
+   npm install -g vercel
+   vercel login
+   vercel link
+   vercel --prod
+   ```
+
+5. **Verify**, before sharing the URL:
+   ```bash
+   curl -s https://<your-app>.vercel.app/health
+   ```
+   Confirm `guardrails: "on"`, `authz: "on"`, and `storage: "kv"`. If `storage` reads
+   `"memory"`, the KV store isn't attached and conversations/the ledger won't persist
+   reliably across requests.
+
+### `DEBUG_TOKEN` — worth setting for a public deployment
+
+`/debug/refund_log` and `/debug/reset` were always demo-only introspection, never part
+of the simulated product surface (see [Scoring](#scoring-side-effects-not-prose)) — but
+on localhost that distinction didn't matter since only you could reach them. Public, they
+let any visitor watch your refund ledger or reset it mid-demo. Setting `DEBUG_TOKEN` in
+Vercel's environment variables requires a matching `X-Debug-Token` header on both
+endpoints; leave it unset locally, where the existing red-team suite and `demo_script.md`
+rely on them being open. This is unrelated to the OWASP findings scored elsewhere in this
+project — LLM10 (no rate limiting on `/chat`) stays open and public exactly as documented,
+because fixing it wasn't in scope and pretending otherwise would misrepresent the
+scorecard.
+
+### Known limits of the serverless build
+
+- **Cold starts and turn latency.** A single `/chat` turn can take 10–30s against
+  `gpt-5.2` (it's a reasoning model running a full ReAct loop). `vercel.json` sets
+  `maxDuration: 60` for the API function; if you still see timeouts, check your plan's
+  actual configurable ceiling in the Vercel dashboard and raise it.
+- **This still doesn't fix LLM10.** Vercel KV makes state reliable; it does not add rate
+  limiting. The public deployment is exactly as unthrottled as the local one.
+- **Not load-tested.** This was built and verified as a single-visitor demo, not a
+  production service.
+
+---
+
 ## Results snapshot
 
 Real numbers from `gpt-5.2`, 2026-07-26. Not placeholders.
@@ -320,12 +424,20 @@ Stated plainly, because a scorecard that overclaims is worse than none.
 
 ```
 target_agent/
-  mock_db.py         6 synthetic transactions + refund_log (the ground truth)
-  agent.py           LangGraph ReAct agent, 3 tools, Stage 6 guardrails
-  server.py          FastAPI: /chat, /health, /debug/*
+  mock_db.py         6 synthetic transactions + refund log (delegates to store.py)
+  store.py           session/ledger storage — in-memory locally, Vercel KV when deployed
+  agent.py           LangGraph ReAct agent, 3 tools, Stage 6 + LLM02 guardrails
+  server.py          FastAPI: /, /chat, /health, /debug/*
   run_agent.py       entry point
   manual_test.py     benign sanity check
   stub_llm.py        offline keyword router — CI/plumbing only, NO valid findings
+
+public/
+  index.html         demo chat UI — static asset on Vercel, served via FastAPI locally
+                     (one file, not two copies — see "Deploying to Vercel")
+
+api/
+  index.py           Vercel entrypoint; re-exports the same FastAPI app used locally
 
 redteam/
   attacks/           one module per OWASP category, each run(base_url) -> AttackResult
@@ -343,6 +455,8 @@ report/
 
 reports/                  generated (gitignored except .md write-ups + .gitkeep)
 promptfooconfig.yaml      CI regression gate
+vercel.json               routes /chat, /health, /debug/* to api/index.py;
+                          "/" is left alone so Vercel serves public/index.html directly
 .github/workflows/redteam-ci.yml
 ```
 

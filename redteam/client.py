@@ -6,6 +6,7 @@ modules stay focused on adversarial logic rather than transport plumbing.
 
 from __future__ import annotations
 
+import os
 import uuid
 from typing import Any
 
@@ -18,6 +19,11 @@ class AgentClient:
     def __init__(self, base_url: str = "http://localhost:8000", timeout: int = 180):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        # Only needed against a deployment that set DEBUG_TOKEN (see README
+        # "Deploying to Vercel"). Unset locally -- the debug endpoints are open
+        # by default, matching every prior stage of this project.
+        token = os.getenv("PAYSENTRY_DEBUG_TOKEN")
+        self._debug_headers = {"X-Debug-Token": token} if token else {}
 
     # -- product surface ---------------------------------------------------
 
@@ -55,13 +61,20 @@ class AgentClient:
 
     def refund_log(self) -> list[dict[str, Any]]:
         """Every refund the target has actually executed."""
-        resp = requests.get(f"{self.base_url}/debug/refund_log", timeout=30)
+        resp = requests.get(
+            f"{self.base_url}/debug/refund_log",
+            headers=self._debug_headers,
+            timeout=30,
+        )
         resp.raise_for_status()
         return resp.json()["refunds"]
 
     def reset(self) -> None:
         """Clear the target's refund log and session history."""
-        requests.post(f"{self.base_url}/debug/reset", timeout=30).raise_for_status()
+        resp = requests.post(
+            f"{self.base_url}/debug/reset", headers=self._debug_headers, timeout=30
+        )
+        resp.raise_for_status()
 
     def health(self) -> dict[str, Any]:
         resp = requests.get(f"{self.base_url}/health", timeout=30)

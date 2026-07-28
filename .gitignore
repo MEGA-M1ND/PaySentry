@@ -19,3 +19,6 @@ garak.log
 runs/
 .promptfoo/
 .env
+
+# Vercel CLI project link (project/org IDs), created by `vercel link`
+.vercel/

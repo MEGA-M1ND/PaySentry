@@ -139,10 +139,10 @@
   <header>
     <h1>PaySentry <span>— Acme Pay Support Agent</span></h1>
     <div class="target-btns">
-      <button id="btnPatched" class="active">Patched · :8000</button>
-      <button id="btnVulnerable">Vulnerable · :8001</button>
+      <button id="btnPatched" class="active">This server</button>
+      <button id="btnVulnerable" title="Only reachable if you're running a second instance locally with PAYSENTRY_GUARDRAILS=off on your own machine">localhost:8001 (local compare)</button>
     </div>
-    <input id="baseUrl" value="http://localhost:8000" spellcheck="false">
+    <input id="baseUrl" value="" spellcheck="false">
     <div id="healthBadge"><span class="pill neutral">checking…</span></div>
   </header>
 
@@ -211,12 +211,17 @@ newSession();
 
 function baseUrl() { return baseUrlEl.value.trim().replace(/\/$/, ""); }
 
+// Defaults to wherever this page is actually being served from, so the same
+// file works unmodified whether it's opened at http://localhost:8000 (local
+// dev) or a deployed https://*.vercel.app URL -- no hardcoded host.
+const THIS_ORIGIN = window.location.origin;
+
 function setActiveTargetButtons(url) {
-  $("btnPatched").classList.toggle("active", url.includes(":8000"));
+  $("btnPatched").classList.toggle("active", url === THIS_ORIGIN);
   $("btnVulnerable").classList.toggle("active", url.includes(":8001"));
 }
 
-$("btnPatched").onclick = () => { baseUrlEl.value = "http://localhost:8000"; onTargetChanged(); };
+$("btnPatched").onclick = () => { baseUrlEl.value = THIS_ORIGIN; onTargetChanged(); };
 $("btnVulnerable").onclick = () => { baseUrlEl.value = "http://localhost:8001"; onTargetChanged(); };
 baseUrlEl.onchange = onTargetChanged;
 
@@ -234,7 +239,8 @@ async function refreshHealth() {
     badge.innerHTML =
       `<span class="pill neutral">${d.model || "?"}</span>` +
       `<span class="pill ${d.guardrails === "on" ? "on" : "off"}">guardrails ${d.guardrails}</span>` +
-      `<span class="pill ${d.authz === "on" ? "on" : "off"}">authz ${d.authz}</span>`;
+      `<span class="pill ${d.authz === "on" ? "on" : "off"}">authz ${d.authz}</span>` +
+      `<span class="pill neutral" title="memory = in-process dicts, lost between serverless invocations; kv = Vercel KV, survives them">storage: ${d.storage || "?"}</span>`;
   } catch (e) {
     badge.innerHTML = `<span class="pill off">unreachable</span>`;
   }
@@ -392,6 +398,7 @@ $("presetReset").onclick = async () => {
 };
 
 // --- Init --------------------------------------------------------------
+baseUrlEl.value = THIS_ORIGIN;
 setActiveTargetButtons(baseUrlEl.value);
 refreshHealth();
 refreshLedger();
