@@ -53,6 +53,27 @@
   .pill.off { background: var(--bad-bg); color: var(--bad); }
   .pill.neutral { background: var(--code-bg); color: var(--muted); }
 
+  #introBanner {
+    position: relative; padding: .8rem 2.4rem .8rem 1rem; border-bottom: 1px solid var(--line);
+    background: var(--code-bg); flex-shrink: 0;
+  }
+  #introBanner p { margin: 0 0 .55rem; font-size: .82rem; line-height: 1.55; color: var(--fg); max-width: 92ch; }
+  #introBanner b { color: var(--fg); }
+  .introLinks { display: flex; gap: .5rem; flex-wrap: wrap; }
+  .introLinks a {
+    font-size: .76rem; font-weight: 600; padding: .3rem .7rem; border-radius: 6px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--accent);
+    text-decoration: none; white-space: nowrap;
+  }
+  .introLinks a:hover { border-color: var(--accent); }
+  #introDismiss {
+    position: absolute; top: .5rem; right: .6rem; width: 1.5rem; height: 1.5rem; border: none;
+    border-radius: 6px; background: transparent; color: var(--muted); font-size: 1.1rem;
+    line-height: 1; cursor: pointer;
+  }
+  #introDismiss:hover { background: var(--panel); color: var(--fg); }
+  #introBanner.hidden { display: none; }
+
   main { flex: 1; display: flex; min-height: 0; }
 
   #chatCol { flex: 1.4; display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--line); }
@@ -145,6 +166,25 @@
     <input id="baseUrl" value="" spellcheck="false">
     <div id="healthBadge"><span class="pill neutral">checking…</span></div>
   </header>
+
+  <div id="introBanner">
+    <button id="introDismiss" title="Dismiss for this session" aria-label="Dismiss">&times;</button>
+    <p>
+      PaySentry red-teams a mock LangGraph payment-support agent across the
+      <b>OWASP Top 10 for LLM Applications</b>, scores findings by what the agent actually
+      <i>did</i> rather than what it said, and locks each fix into CI so it can't silently
+      regress. <b>Flagship finding:</b> this agent was talked into refunding ₹11,049 against
+      a $129.99 charge — an <b>85x over-refund</b> — without the attacker telling a single
+      lie. <b>This deployment runs the patched, secured build</b> — the fix lives in the
+      tool, not the prompt. Try the <i>Flagship attack</i> preset below and watch it get
+      rejected; the write-up below shows the same attack succeeding before the fix.
+    </p>
+    <div class="introLinks">
+      <a href="https://github.com/MEGA-M1ND/PaySentry" target="_blank" rel="noopener">Source on GitHub</a>
+      <a href="/scorecard.html" target="_blank" rel="noopener">OWASP scorecard</a>
+      <a href="https://github.com/MEGA-M1ND/PaySentry/blob/main/reports/excessive_agency_before_after.md" target="_blank" rel="noopener">Before / after write-up</a>
+    </div>
+  </div>
 
   <main>
     <div id="chatCol">
@@ -395,6 +435,16 @@ $("presetReset").onclick = async () => {
   newSession();
   addMessage("system", "Ledger and sessions reset on " + baseUrl() + ". New UI session started.");
   refreshLedger();
+};
+
+// --- Intro banner dismiss (session-scoped, not permanent -- a fresh visit
+// later should see the context again) --------------------------------------
+const INTRO_DISMISS_KEY = "paysentry-intro-dismissed";
+const introBannerEl = $("introBanner");
+if (sessionStorage.getItem(INTRO_DISMISS_KEY)) introBannerEl.classList.add("hidden");
+$("introDismiss").onclick = () => {
+  introBannerEl.classList.add("hidden");
+  sessionStorage.setItem(INTRO_DISMISS_KEY, "1");
 };
 
 // --- Init --------------------------------------------------------------
