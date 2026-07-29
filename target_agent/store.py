@@ -7,15 +7,31 @@ every stage of this project up to now.
 Deployed on Vercel, the FastAPI app runs as a serverless function. Instances
 are ephemeral and requests are not guaranteed to land on the same one, so a
 module-level dict would silently lose conversation history and -- worse --
-the refund_log ground truth this entire project scores against. When Vercel
-has a KV store attached, it injects KV_REST_API_URL / KV_REST_API_TOKEN; this
-module switches to that automatically. There is no separate flag to keep in
-sync with the environment -- the presence of those two variables IS the
-switch, so local dev and the deployed build run identical code.
+the refund_log ground truth this entire project scores against. Two Redis
+connection shapes are supported, tried in this order:
 
-KV is Vercel's rebrand of Upstash Redis, and Upstash publishes a REST-based
-Python client (`upstash-redis`) built exactly for this: no persistent TCP
-connection, which is what makes it viable inside a serverless function.
+  1. REDIS_URL -- a plain redis:// or rediss:// connection string. This is
+     the standard shape most Vercel Marketplace Redis add-ons hand you
+     (embedded auth: redis://default:PASSWORD@host:port), used via the
+     ordinary redis-py TCP client.
+
+  2. KV_REST_API_URL + KV_REST_API_TOKEN -- Upstash's REST API (what the
+     original, now-retired "Vercel KV" product injected). Used via the
+     upstash-redis client, which talks HTTP rather than holding a TCP
+     connection -- notable only because some marketplace listings still
+     offer this shape instead of a raw URL.
+
+REDIS_URL is deliberately the name this module looks for, rather than
+whatever a specific marketplace integration happens to auto-generate (one
+observed example produced a value under a short, resource-specific name that
+had nothing to do with "redis"). Set REDIS_URL yourself in Vercel's
+environment variables with the same value your provider gave you, under
+whatever name it chose -- one fixed name here beats chasing every vendor's
+naming convention.
+
+Either way, there is no separate flag to keep in sync with the environment --
+the presence of these variables IS the switch, so local dev and the deployed
+build run identical code.
 """
 
 from __future__ import annotations
@@ -26,9 +42,10 @@ from typing import Any
 
 from langchain_core.messages import BaseMessage, messages_from_dict, messages_to_dict
 
+_REDIS_URL = os.getenv("REDIS_URL")
 _KV_URL = os.getenv("KV_REST_API_URL")
 _KV_TOKEN = os.getenv("KV_REST_API_TOKEN")
-USING_KV = bool(_KV_URL and _KV_TOKEN)
+USING_KV = bool(_REDIS_URL) or bool(_KV_URL and _KV_TOKEN)
 
 _REFUND_LOG_KEY = "paysentry:refund_log"
 
@@ -69,13 +86,18 @@ class _MemoryBackend:
         self.refunds.clear()
 
 
-class _KVBackend:
-    """Vercel KV (Upstash Redis REST API) backend for serverless deployment."""
+class _RedisBackedStore:
+    """Shared logic for any client exposing the standard Redis command names.
 
-    def __init__(self, url: str, token: str) -> None:
-        from upstash_redis import Redis  # imported lazily -- see module docstring
+    Both connection shapes described in the module docstring (redis-py's TCP
+    client, upstash-redis's REST client) expose an identical surface for the
+    six commands used here -- get/set/rpush/lrange/keys/delete -- so the
+    actual storage logic lives here once, and each subclass only constructs
+    the right client for its connection shape.
+    """
 
-        self._redis = Redis(url=url, token=token)
+    def __init__(self, client: Any) -> None:
+        self._redis = client
 
     @staticmethod
     def _history_key(session_id: str) -> str:
@@ -112,9 +134,9 @@ class _KVBackend:
         return [json.loads(r) for r in raw_list]
 
     def session_count(self) -> int:
-        # Approximate: KV has no cheap "count sessions" primitive without
-        # maintaining a separate index, and nothing here depends on the exact
-        # number -- /health reports it purely as an eyeballed liveness signal.
+        # Approximate: no cheap "count sessions" primitive without maintaining
+        # a separate index, and nothing here depends on the exact number --
+        # /health reports it purely as an eyeballed liveness signal.
         return len(self._redis.keys("paysentry:history:*"))
 
     def reset(self) -> None:
@@ -124,7 +146,35 @@ class _KVBackend:
         self._redis.delete(_REFUND_LOG_KEY)
 
 
-_backend = _KVBackend(_KV_URL, _KV_TOKEN) if USING_KV else _MemoryBackend()
+class _RedisUrlBackend(_RedisBackedStore):
+    """Plain redis:// / rediss:// connection string -- the common marketplace shape."""
+
+    def __init__(self, url: str) -> None:
+        import redis  # imported lazily -- see module docstring
+
+        # decode_responses=True so get()/lrange() return str, not bytes;
+        # everything else here assumes str (json.loads, string formatting).
+        super().__init__(redis.Redis.from_url(url, decode_responses=True))
+
+
+class _UpstashRestBackend(_RedisBackedStore):
+    """Upstash's REST API -- what the original "Vercel KV" product injected."""
+
+    def __init__(self, url: str, token: str) -> None:
+        from upstash_redis import Redis  # imported lazily -- see module docstring
+
+        super().__init__(Redis(url=url, token=token))
+
+
+def _select_backend():
+    if _REDIS_URL:
+        return _RedisUrlBackend(_REDIS_URL)
+    if _KV_URL and _KV_TOKEN:
+        return _UpstashRestBackend(_KV_URL, _KV_TOKEN)
+    return _MemoryBackend()
+
+
+_backend = _select_backend()
 
 
 def get_history(session_id: str) -> list[BaseMessage]:
