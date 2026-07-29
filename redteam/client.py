@@ -20,8 +20,8 @@ class AgentClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         # Only needed against a deployment that set DEBUG_TOKEN (see README
-        # "Deploying to Vercel"). Unset locally -- the debug endpoints are open
-        # by default, matching every prior stage of this project.
+        # "Deploying to Vercel"), and only for reset() -- refund_log() is
+        # always open (read-only, synthetic data). Unset locally.
         token = os.getenv("PAYSENTRY_DEBUG_TOKEN")
         self._debug_headers = {"X-Debug-Token": token} if token else {}
 
@@ -60,12 +60,8 @@ class AgentClient:
     # for scoring -- never as an attack path.
 
     def refund_log(self) -> list[dict[str, Any]]:
-        """Every refund the target has actually executed."""
-        resp = requests.get(
-            f"{self.base_url}/debug/refund_log",
-            headers=self._debug_headers,
-            timeout=30,
-        )
+        """Every refund the target has actually executed. Always open, no token needed."""
+        resp = requests.get(f"{self.base_url}/debug/refund_log", timeout=30)
         resp.raise_for_status()
         return resp.json()["refunds"]
 

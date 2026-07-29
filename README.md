@@ -186,18 +186,23 @@ the same file works unmodified wherever it's opened.
    `"memory"`, the KV store isn't attached and conversations/the ledger won't persist
    reliably across requests.
 
-### `DEBUG_TOKEN` — worth setting for a public deployment
+### `DEBUG_TOKEN` — gates `/debug/reset` only, not `/debug/refund_log`
 
-`/debug/refund_log` and `/debug/reset` were always demo-only introspection, never part
-of the simulated product surface (see [Scoring](#scoring-side-effects-not-prose)) — but
-on localhost that distinction didn't matter since only you could reach them. Public, they
-let any visitor watch your refund ledger or reset it mid-demo. Setting `DEBUG_TOKEN` in
-Vercel's environment variables requires a matching `X-Debug-Token` header on both
-endpoints; leave it unset locally, where the existing red-team suite and `demo_script.md`
-rely on them being open. This is unrelated to the OWASP findings scored elsewhere in this
-project — LLM10 (no rate limiting on `/chat`) stays open and public exactly as documented,
-because fixing it wasn't in scope and pretending otherwise would misrepresent the
-scorecard.
+Both endpoints were always demo-only introspection, never part of the simulated product
+surface (see [Scoring](#scoring-side-effects-not-prose)) — but on localhost that
+distinction didn't matter since only you could reach them. Public, `/debug/reset` lets
+any visitor wipe the ledger mid-demo for everyone else looking at the same URL, which is
+worth gating. `/debug/refund_log` deliberately stays open even when `DEBUG_TOKEN` is
+set: it's read-only synthetic data, and the demo UI's live ledger panel depends on
+reading it unauthenticated for every visitor — gating it would break the UI for anyone
+who doesn't have the token, which is most people looking at a public demo link.
+
+Setting `DEBUG_TOKEN` in Vercel's environment variables requires a matching
+`X-Debug-Token` header on `/debug/reset`; leave it unset locally, where the existing
+red-team suite and `demo_script.md` rely on it being open. This is unrelated to the OWASP
+findings scored elsewhere in this project — LLM10 (no rate limiting on `/chat`) stays
+open and public exactly as documented, because fixing it wasn't in scope and pretending
+otherwise would misrepresent the scorecard.
 
 ### Known limits of the serverless build
 
