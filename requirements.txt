@@ -39,9 +39,10 @@ pydantic==2.10.3
 python-dotenv==1.0.1
 requests==2.34.2
 
-# --- Vercel KV backend (target_agent/store.py) ---
-# Only imported when KV_REST_API_URL/TOKEN are present in the environment
-# (i.e. deployed on Vercel with a KV store attached). Local dev never touches
-# this -- it falls back to plain in-memory dicts -- but it's installed
-# unconditionally so the same requirements.txt works for both.
-upstash-redis==1.7.0
+# --- Redis-backed storage (target_agent/store.py) ---
+# Only imported when REDIS_URL or KV_REST_API_URL/TOKEN are present in the
+# environment (i.e. deployed with a Redis store attached). Local dev never
+# touches this -- it falls back to plain in-memory dicts -- but both are
+# installed unconditionally so the same requirements.txt works everywhere.
+redis==8.0.1          # REDIS_URL (redis:// / rediss://) -- the common shape
+upstash-redis==1.7.0  # KV_REST_API_URL/TOKEN (Upstash's REST API)

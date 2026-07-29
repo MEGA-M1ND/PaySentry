@@ -127,14 +127,30 @@ on Vercel, where the FastAPI app runs as a serverless function and instances are
 ephemeral with no guarantee your next request lands on the same one.
 
 `target_agent/store.py` fixes this with a backend switch that requires no flag to keep in
-sync with the environment: if Vercel has attached a KV store, it injects
-`KV_REST_API_URL`/`KV_REST_API_TOKEN`, and `store.py` uses those automatically (Vercel KV
-is a rebrand of Upstash Redis, reachable over a REST API — no persistent connection,
-which is what makes it viable inside a serverless function at all). Absent those two
-variables — true for every local run — it falls back to the exact in-memory dicts this
+sync with the environment, and it supports **two different Redis connection shapes**
+because Vercel's storage marketplace doesn't hand you just one:
+
+- **`REDIS_URL`** — a plain `redis://` or `rediss://` connection string with credentials
+  embedded (`redis://default:PASSWORD@host:port`). This is what most free-tier
+  marketplace Redis add-ons actually give you, used via the ordinary `redis-py` TCP
+  client. **This is the name to set** — see step 2 below for why.
+- **`KV_REST_API_URL` + `KV_REST_API_TOKEN`** — Upstash's REST API, what the original
+  "Vercel KV" product injected before Vercel moved storage to a marketplace model. Used
+  via `upstash-redis`'s HTTP client. Kept for anyone who ends up with a genuine Upstash
+  REST integration instead.
+
+Absent both — true for every local run — it falls back to the exact in-memory dicts this
 project always used. `/health`'s `storage` field tells you which one is actually live;
 it should read `"kv"` once deployed, and if it doesn't, sessions and the ledger will
 silently reset between requests.
+
+**Why `REDIS_URL` specifically, rather than whatever name your provider auto-generates:**
+attaching a free Redis add-on through Vercel's marketplace does not reliably produce a
+variable named anything predictable — one observed example named it after the resource
+itself, with no "redis" or "kv" in the name at all. Chasing every vendor's naming
+convention in code is a losing game. Instead, `store.py` looks for one fixed name, and
+you add a *second* environment variable under that name with the same value your
+provider gave you under whatever name it chose. One rename, done once, in the dashboard.
 
 The static demo UI (`public/index.html`) is served by Vercel directly as a static asset,
 not through the Python function — zero cold start for the page itself, and it's the
@@ -149,12 +165,26 @@ the same file works unmodified wherever it's opened.
    `vercel.json` and `api/index.py` handle routing, `requirements.txt` at the repo root
    is auto-detected for the Python function.
 
-2. **Attach a KV store.** Project → Storage tab → Connect Store → a Redis-compatible KV
-   option (Vercel's storage marketplace; Upstash-backed). Link it to this project. This
-   is what injects `KV_REST_API_URL`/`KV_REST_API_TOKEN` — without it the deployed app
-   still runs, just with `storage: "memory"` and the reliability problem described above.
-   Exact wording/navigation may have moved since this was written; the goal is any option
-   that sets those two env var names.
+2. **Attach a Redis store.** Project → Storage tab → Connect Store → a Redis option.
+   **Skip anything that only shows paid monthly tiers with no free option** — that's
+   Vercel's marketplace checkout for a committed plan, not a requirement. If you land
+   there, back out and either look for a "Pay as you go" / free tier on the same
+   listing, or sign up directly at the provider's own site (e.g. upstash.com has a
+   genuinely free tier) and skip Vercel's marketplace billing entirely — either way you
+   end up with a connection string, which is all this needs.
+
+   Once attached, go to **Settings → Environment Variables** and find whatever variable
+   it added — the name is not guaranteed to be predictable. Copy its **value**, then add
+   a *new* variable named exactly:
+
+   | Variable | Value |
+   | --- | --- |
+   | `REDIS_URL` | *(the same value your provider's variable holds — starts with `redis://` or `rediss://`)* |
+
+   This is the one name `store.py` actually checks. If your integration instead gives you
+   a REST endpoint + separate token (starts with `https://`, Upstash's original shape),
+   set `KV_REST_API_URL` and `KV_REST_API_TOKEN` instead — `store.py` checks for both
+   shapes and uses whichever is present.
 
 3. **Set environment variables** (Project → Settings → Environment Variables):
 
@@ -430,7 +460,8 @@ Stated plainly, because a scorecard that overclaims is worse than none.
 ```
 target_agent/
   mock_db.py         6 synthetic transactions + refund log (delegates to store.py)
-  store.py           session/ledger storage — in-memory locally, Vercel KV when deployed
+  store.py           session/ledger storage — in-memory locally; REDIS_URL or
+                     KV_REST_API_URL/TOKEN when deployed (either Redis shape)
   agent.py           LangGraph ReAct agent, 3 tools, Stage 6 + LLM02 guardrails
   server.py          FastAPI: /, /chat, /health, /debug/*
   run_agent.py       entry point
