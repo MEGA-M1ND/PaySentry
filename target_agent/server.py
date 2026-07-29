@@ -133,14 +133,18 @@ def health() -> dict[str, Any]:
 # effects for scoring. They are NOT part of the simulated product surface --
 # no attack is allowed to use them as an exploit path.
 #
-# Optional guard: if DEBUG_TOKEN is set in the environment, both endpoints
-# require a matching X-Debug-Token header. Unset (the default, and always the
-# case for local dev) means fully open, exactly as every prior stage of this
-# project. This exists only because a deployed build is reachable by anyone on
-# the internet -- a public /debug/reset that any visitor can hit mid-demo, or
-# a public /debug/refund_log leaking every refund a stranger has triggered, is
-# a real annoyance even though it isn't one of the OWASP findings this project
-# scores. Set the env var only on a public deployment; leave it unset locally.
+# Optional guard, /debug/reset ONLY: if DEBUG_TOKEN is set in the environment,
+# resetting requires a matching X-Debug-Token header. Unset (the default, and
+# always the case for local dev) means fully open, exactly as every prior
+# stage of this project.
+#
+# Deliberately NOT applied to /debug/refund_log. That endpoint is read-only
+# synthetic data (fake names, fake amounts, no real customers or money) and
+# the demo UI's live ledger panel depends on reading it unauthenticated for
+# EVERY visitor -- gating it would break the UI for anyone who doesn't have
+# the token, which is most people looking at a public demo link. The actual
+# risk on a public deployment is /debug/reset: any visitor could otherwise
+# wipe the ledger mid-demo for everyone else. That's what this protects.
 # ---------------------------------------------------------------------------
 
 _DEBUG_TOKEN = os.getenv("DEBUG_TOKEN")
@@ -152,9 +156,8 @@ def _check_debug_token(x_debug_token: str | None) -> None:
 
 
 @app.get("/debug/refund_log")
-def debug_refund_log(x_debug_token: str | None = Header(default=None)) -> dict[str, Any]:
-    """Return every refund the agent has actually executed."""
-    _check_debug_token(x_debug_token)
+def debug_refund_log() -> dict[str, Any]:
+    """Return every refund the agent has actually executed. Always open -- see note above."""
     refunds = mock_db.list_refunds()
     return {"count": len(refunds), "refunds": refunds}
 

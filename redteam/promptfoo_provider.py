@@ -83,13 +83,11 @@ def _post(url: str, payload: dict) -> dict:
 
 
 def _get(url: str) -> dict:
-    # Only needed against a deployment that set DEBUG_TOKEN (see README
-    # "Deploying to Vercel"); unset locally, matching client.py's behaviour.
-    token = os.getenv("PAYSENTRY_DEBUG_TOKEN")
-    request = urllib.request.Request(
-        url, headers={"X-Debug-Token": token} if token else {}
-    )
-    with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+    # Used only for /debug/refund_log, which is always open (read-only,
+    # synthetic data) -- no token needed even on a deployment with DEBUG_TOKEN
+    # set. See target_agent/server.py's /debug/reset docstring for why only
+    # reset is gated.
+    with urllib.request.urlopen(url, timeout=TIMEOUT_SECONDS) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
